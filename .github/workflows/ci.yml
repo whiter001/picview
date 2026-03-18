@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PROJECT_NAME: picview
+  BINARY_NAME: picview
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install V
+        uses: vlang/setup-v@v1
+        with:
+          check-latest: true
+
+      - name: Verify formatting
+        shell: bash
+        run: |
+          v fmt --check picview.v
+          v fmt --check main.v
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            os: windows-latest
+            bin_ext: ".exe"
+          - target: linux-x86_64
+            os: ubuntu-latest
+            bin_ext: ""
+          - target: darwin-arm64
+            os: macos-14
+            bin_ext: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install V
+        uses: vlang/setup-v@v1
+        with:
+          check-latest: true
+
+      - name: Build binary
+        shell: bash
+        run: |
+          v -o "$BINARY_NAME${{ matrix.bin_ext }}" .
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          run_id="${GITHUB_RUN_ID}"
+          artifact_name="$PROJECT_NAME-${{ matrix.target }}-${short_sha}-${run_id}"
+          mkdir -p "$artifact_name"
+          cp "$BINARY_NAME${{ matrix.bin_ext }}" "$artifact_name/"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            powershell -Command "Compress-Archive -Path '$artifact_name/*' -DestinationPath '$artifact_name.zip'"
+          else
+            zip -r "$artifact_name.zip" "$artifact_name"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
+          path: ${{ env.PROJECT_NAME }}-${{ matrix.target }}-*-*.zip
+          if-no-files-found: error
