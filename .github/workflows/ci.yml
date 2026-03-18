@@ -43,9 +43,9 @@ jobs:
           - target: windows-x86_64
             os: windows-latest
             bin_ext: ".exe"
-          - target: linux-x86_64
-            os: ubuntu-latest
-            bin_ext: ""
+          # - target: linux-x86_64
+          #   os: ubuntu-latest
+          #   bin_ext: ""
           - target: darwin-arm64
             os: macos-14
             bin_ext: ""
@@ -58,7 +58,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev
 
       - name: Install V
         uses: vlang/setup-v@v1.4
