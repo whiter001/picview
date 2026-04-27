@@ -25,9 +25,40 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install V
-        uses: vlang/setup-v@v1.4
-        with:
-          version: ${{ env.V_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64) asset="v_linux.zip" ;;
+            Linux-ARM64) asset="v_linux_arm64.zip" ;;
+            macOS-ARM64) asset="v_macos_arm64.zip" ;;
+            macOS-X64) asset="v_macos_x86_64.zip" ;;
+            *)
+              echo "Unsupported runner: ${{ runner.os }} / ${{ runner.arch }}" >&2
+              exit 1
+              ;;
+          esac
+
+          zip_path="$RUNNER_TEMP/$asset"
+          install_root="$RUNNER_TEMP/v-$V_VERSION"
+          v_dir="$install_root/v"
+          v_bin="$v_dir/v"
+
+          rm -rf "$install_root"
+          rm -f "$zip_path"
+          curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL "https://github.com/vlang/v/releases/download/$V_VERSION/$asset" -o "$zip_path"
+          unzip -q "$zip_path" -d "$install_root"
+
+          if [[ ! -f "$v_bin" ]]; then
+            echo "Failed to locate V binary in $install_root" >&2
+            find "$install_root" -maxdepth 3 -type f | sort >&2
+            exit 1
+          fi
+
+          chmod +x "$v_bin"
+          echo "$(dirname "$v_bin")" >> "$GITHUB_PATH"
+          "$v_bin" version
 
       - name: Verify formatting
         shell: bash
@@ -63,10 +94,76 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev
 
-      - name: Install V
-        uses: vlang/setup-v@v1.4
-        with:
-          version: ${{ env.V_VERSION }}
+      - name: Install V (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64) asset="v_linux.zip" ;;
+            Linux-ARM64) asset="v_linux_arm64.zip" ;;
+            macOS-ARM64) asset="v_macos_arm64.zip" ;;
+            macOS-X64) asset="v_macos_x86_64.zip" ;;
+            *)
+              echo "Unsupported runner: ${{ runner.os }} / ${{ runner.arch }}" >&2
+              exit 1
+              ;;
+          esac
+
+          zip_path="$RUNNER_TEMP/$asset"
+          install_root="$RUNNER_TEMP/v-$V_VERSION"
+          v_dir="$install_root/v"
+          v_bin="$v_dir/v"
+
+          rm -rf "$install_root"
+          rm -f "$zip_path"
+          curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL "https://github.com/vlang/v/releases/download/$V_VERSION/$asset" -o "$zip_path"
+          unzip -q "$zip_path" -d "$install_root"
+
+          if [[ ! -f "$v_bin" ]]; then
+            echo "Failed to locate V binary in $install_root" >&2
+            find "$install_root" -maxdepth 3 -type f | sort >&2
+            exit 1
+          fi
+
+          chmod +x "$v_bin"
+          echo "$(dirname "$v_bin")" >> "$GITHUB_PATH"
+          "$v_bin" version
+
+      - name: Install V (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $zipPath = Join-Path $env:RUNNER_TEMP 'v_windows.zip'
+          $installRoot = Join-Path $env:RUNNER_TEMP "v-$env:V_VERSION"
+          $vDir = Join-Path $installRoot 'v'
+          $vExe = Join-Path $vDir 'v.exe'
+
+          if (Test-Path $installRoot) {
+            Remove-Item $installRoot -Recurse -Force
+          }
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
+
+          $url = "https://github.com/vlang/v/releases/download/$env:V_VERSION/v_windows.zip"
+          & curl.exe -fsSL --retry 5 --retry-delay 2 --retry-all-errors $url -o $zipPath
+          New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+          & tar.exe -xf $zipPath -C $installRoot
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          if (-not (Test-Path $vExe)) {
+            Get-ChildItem -Path $installRoot -Recurse -File | Select-Object -First 50 FullName | Format-Table -AutoSize
+            throw "Failed to locate v.exe under $installRoot"
+          }
+
+          Add-Content -Path $env:GITHUB_PATH -Value $vDir
+          & $vExe version
 
       - name: Build binary
         shell: bash
