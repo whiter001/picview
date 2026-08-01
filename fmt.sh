@@ -3,7 +3,7 @@
 
 echo "Formatting V source files..."
 
-v fmt picview.v
-v fmt main.v
+v fmt -w picview.v
+v fmt -w main.v
 
 echo "Done!"

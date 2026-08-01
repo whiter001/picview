@@ -1,4 +1,3 @@
-// filepath: src/grok.v
 module picview
 
 import gg
@@ -6,29 +5,29 @@ import os
 import time
 
 enum ViewMode {
-	fit     // 自动适配窗口
-	manual  // 手动缩放/拖拽
+	fit    // 自动适配窗口
+	manual // 手动缩放/拖拽
 }
 
 struct App {
 mut:
-	gg              &gg.Context = unsafe { nil }
-	img             gg.Image
-	img_x           f32
-	img_y           f32
-	scale           f32 = 1.0
-	view_mode       ViewMode = .fit
-	is_dragging     bool
-	last_mouse_x    f32
-	last_mouse_y    f32
-	min_scale       f32 = 0.1
-	max_scale       f32 = 8.0
-	img_paths       []string
-	img_index       int
-	slide_mode      bool
-	last_slide_time i64
-	slide_interval  int = 2
-	show_help       bool
+	gg               &gg.Context = unsafe { nil }
+	img              gg.Image
+	img_x            f32
+	img_y            f32
+	scale            f32      = 1.0
+	view_mode        ViewMode = .fit
+	is_dragging      bool
+	last_mouse_x     f32
+	last_mouse_y     f32
+	min_scale        f32 = 0.1
+	max_scale        f32 = 8.0
+	img_paths        []string
+	img_index        int
+	slide_mode       bool
+	last_slide_time  i64
+	slide_interval   int = 2
+	show_help        bool
 	need_initial_fit bool
 }
 
@@ -142,9 +141,7 @@ pub fn run() {
 	}
 
 	fs := os.ls(base_dir) or { panic('Failed to list files in ${base_dir}') }
-	mut files := fs.filter(fn (f string) bool {
-		return ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'].any(f.to_lower().ends_with(it))
-	}).map(os.join_path(base_dir, it))
+	mut files := fs.filter(is_image_file).map(os.join_path(base_dir, it))
 	files.sort()
 
 	if files.len == 0 {
@@ -285,8 +282,7 @@ fn on_event(e &gg.Event, mut app App) {
 				.h {
 					app.show_help = !app.show_help
 				}
-				else {
-				}
+				else {}
 			}
 		}
 		.mouse_down {
@@ -321,7 +317,15 @@ fn (mut app App) status_text() string {
 	}
 	is_fullscreen := gg.is_fullscreen()
 	name := os.file_name(app.img_paths[app.img_index])
-	return '${name}  ${app.img_index + 1}/${app.img_paths.len}  ${app.img.width}x${app.img.height}  zoom:${app.scale:.2f}  mode:${view_mode_str}  fs:${if is_fullscreen { "Y" } else { "N" }}  slide:${if app.slide_mode { "Y" } else { "N" }}(${app.slide_interval}s)'
+	return '${name}  ${app.img_index + 1}/${app.img_paths.len}  ${app.img.width}x${app.img.height}  zoom:${app.scale:.2f}  mode:${view_mode_str}  fs:${if is_fullscreen {
+		'Y'
+	} else {
+		'N'
+	}}  slide:${if app.slide_mode {
+		'Y'
+	} else {
+		'N'
+	}}(${app.slide_interval}s)'
 }
 
 fn on_scroll(event &gg.Event, mut app App) {
@@ -375,7 +379,8 @@ fn frame(mut app App) {
 	})
 
 	if app.show_help {
-		app.gg.draw_text(10, 34, '[H] help  [←/→] prev/next  [+/-/wheel] zoom  [0] fit  [1] 100%  [R] refit  [S] slide  [[]/]] interval  [F] fullscreen  [Esc] quit  [drag] move', gg.TextCfg{
+		app.gg.draw_text(10, 34,
+			'[H] help  [←/→] prev/next  [+/-/wheel] zoom  [0] fit  [1] 100%  [R] refit  [S] slide  [[]/]] interval  [F] fullscreen  [Esc] quit  [drag] move', gg.TextCfg{
 			color: gg.rgb(40, 40, 40)
 			size:  14
 		})
