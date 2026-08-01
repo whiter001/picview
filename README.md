@@ -8,6 +8,9 @@ A lightweight image viewer built with V and gg, supporting multiple formats, zoo
 # Pass the image directory as the first argument
 v run . images
 
+# Or pass a single image file to browse its directory, starting at that file
+v run . images/sample.jpeg
+
 # Show help
 v run . -h
 

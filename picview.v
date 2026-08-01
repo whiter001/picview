@@ -68,31 +68,24 @@ fn (mut app App) clamp_scale(scale f32) f32 {
 	}
 }
 
-fn (mut app App) apply_zoom(factor f32) {
+fn (mut app App) apply_zoom(factor f32, anchor_x f32, anchor_y f32) {
 	if app.img.width <= 0 || app.img.height <= 0 {
 		return
 	}
 
-	// Decide zoom center before switching off fit mode
-	win := app.gg.window_size()
-	center_x := if app.view_mode == .fit {
-		f32(win.width) * 0.5
-	} else {
-		app.img_x + f32(app.img.width) * app.scale * 0.5
-	}
-	center_y := if app.view_mode == .fit {
-		f32(win.height) * 0.5
-	} else {
-		app.img_y + f32(app.img.height) * app.scale * 0.5
-	}
+	// Keep the image point under the anchor fixed on screen
+	img_px := (anchor_x - app.img_x) / app.scale
+	img_py := (anchor_y - app.img_y) / app.scale
 
 	app.view_mode = .manual
-	new_scale := app.clamp_scale(app.scale * factor)
-	app.scale = new_scale
-	new_w := f32(app.img.width) * app.scale
-	new_h := f32(app.img.height) * app.scale
-	app.img_x = center_x - new_w * 0.5
-	app.img_y = center_y - new_h * 0.5
+	app.scale = app.clamp_scale(app.scale * factor)
+	app.img_x = anchor_x - img_px * app.scale
+	app.img_y = anchor_y - img_py * app.scale
+}
+
+fn (mut app App) zoom_at_window_center(factor f32) {
+	win := app.gg.window_size()
+	app.apply_zoom(factor, f32(win.width) * 0.5, f32(win.height) * 0.5)
 }
 
 fn (mut app App) pan_image(dx f32, dy f32) {
@@ -102,8 +95,9 @@ fn (mut app App) pan_image(dx f32, dy f32) {
 }
 
 fn usage() {
-	println('picview [OPTIONS] [DIR]')
-	println('  DIR      directory containing images (default: current directory)')
+	println('picview [OPTIONS] [DIR|FILE]')
+	println('  DIR|FILE  directory containing images, or a single image file')
+	println('            (default: current directory)')
 	println('  -h, --help        print this help and exit')
 }
 
@@ -140,15 +134,43 @@ pub fn run() {
 		}
 	}
 
-	fs := os.ls(base_dir) or { panic('Failed to list files in ${base_dir}') }
+	// A single image file means: browse its directory, starting at that file
+	mut start_name := ''
+	if os.is_file(base_dir) {
+		if !is_image_file(base_dir) {
+			eprintln('error: unsupported image file: ${base_dir}')
+			exit(1)
+		}
+		start_name = os.file_name(base_dir)
+		base_dir = os.dir(base_dir)
+		if base_dir == '' {
+			base_dir = '.'
+		}
+	}
+
+	fs := os.ls(base_dir) or {
+		eprintln('error: cannot list directory ${base_dir}: ${err}')
+		exit(1)
+	}
 	mut files := fs.filter(is_image_file).map(os.join_path(base_dir, it))
 	files.sort()
 
 	if files.len == 0 {
-		panic('No supported images found in ${base_dir}')
+		eprintln('error: no supported images found in ${base_dir}')
+		exit(1)
 	}
 	app.img_paths = files
 	app.img_index = 0
+
+	mut start_index := 0
+	if start_name != '' {
+		for i, f in files {
+			if os.file_name(f) == start_name {
+				start_index = i
+				break
+			}
+		}
+	}
 
 	app.gg = gg.new_context(
 		bg_color:     gg.white
@@ -162,8 +184,9 @@ pub fn run() {
 		resizable:    true
 	)
 
-	if !app.select_first_loadable_image() {
-		panic('No loadable images found in ${base_dir}')
+	if !app.select_first_loadable_image(start_index) {
+		eprintln('error: no loadable images found in ${base_dir}')
+		exit(1)
 	}
 	app.view_mode = .fit
 	app.need_initial_fit = true
@@ -189,12 +212,14 @@ fn (mut app App) load_img_at(index int) bool {
 	return false
 }
 
-fn (mut app App) select_first_loadable_image() bool {
-	for i in 0 .. app.img_paths.len {
-		if app.load_img_at(i) {
+fn (mut app App) select_first_loadable_image(start int) bool {
+	mut index := start
+	for _ in 0 .. app.img_paths.len {
+		if app.load_img_at(index) {
 			app.view_mode = .fit
 			return true
 		}
+		index = (index + 1) % app.img_paths.len
 	}
 	return false
 }
@@ -236,10 +261,10 @@ fn on_event(e &gg.Event, mut app App) {
 					app.fit_to_window()
 				}
 				.equal {
-					app.apply_zoom(1.1)
+					app.zoom_at_window_center(1.1)
 				}
 				.minus {
-					app.apply_zoom(1 / 1.1)
+					app.zoom_at_window_center(1 / 1.1)
 				}
 				._0 {
 					app.view_mode = .fit
@@ -334,9 +359,9 @@ fn on_scroll(event &gg.Event, mut app App) {
 	}
 
 	if event.scroll_y > 0 {
-		app.apply_zoom(1.1)
+		app.apply_zoom(1.1, event.mouse_x, event.mouse_y)
 	} else if event.scroll_y < 0 {
-		app.apply_zoom(1 / 1.1)
+		app.apply_zoom(1 / 1.1, event.mouse_x, event.mouse_y)
 	}
 }
 
