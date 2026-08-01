@@ -29,6 +29,7 @@ mut:
 	slide_interval   int = 2
 	show_help        bool
 	need_initial_fit bool
+	img_cache        map[int]int // img_paths index -> gg image cache index
 }
 
 fn (mut app App) fit_to_window() {
@@ -106,6 +107,59 @@ fn is_image_file(path string) bool {
 	return ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'].any(ext == it)
 }
 
+// natural_compare orders strings so that embedded numbers compare
+// numerically: img2.jpg sorts before img10.jpg.
+fn natural_compare(a &string, b &string) int {
+	sa := *a
+	sb := *b
+	mut i := 0
+	mut j := 0
+	for i < sa.len && j < sb.len {
+		if sa[i].is_digit() && sb[j].is_digit() {
+			mut si := i
+			mut sj := j
+			for i < sa.len && sa[i].is_digit() {
+				i++
+			}
+			for j < sb.len && sb[j].is_digit() {
+				j++
+			}
+			// strip leading zeros, then compare digit runs numerically
+			for si < i && sa[si] == `0` {
+				si++
+			}
+			for sj < j && sb[sj] == `0` {
+				sj++
+			}
+			len_a := i - si
+			len_b := j - sj
+			if len_a != len_b {
+				return if len_a < len_b { -1 } else { 1 }
+			}
+			for k in 0 .. len_a {
+				if sa[si + k] != sb[sj + k] {
+					return if sa[si + k] < sb[sj + k] { -1 } else { 1 }
+				}
+			}
+		} else {
+			if sa[i] != sb[j] {
+				return if sa[i] < sb[j] { -1 } else { 1 }
+			}
+			i++
+			j++
+		}
+	}
+	remaining_a := sa.len - i
+	remaining_b := sb.len - j
+	return if remaining_a < remaining_b {
+		-1
+	} else if remaining_a > remaining_b {
+		1
+	} else {
+		0
+	}
+}
+
 pub fn run() {
 	mut app := &App{}
 	args := os.args
@@ -153,7 +207,7 @@ pub fn run() {
 		exit(1)
 	}
 	mut files := fs.filter(is_image_file).map(os.join_path(base_dir, it))
-	files.sort()
+	files.sort_with_compare(natural_compare)
 
 	if files.len == 0 {
 		eprintln('error: no supported images found in ${base_dir}')
@@ -193,23 +247,44 @@ pub fn run() {
 	app.gg.run()
 }
 
-fn (mut app App) load_img(path string) bool {
-	app.img = app.gg.create_image(path) or {
-		eprintln('Skipping unreadable image ${path}: ${err}')
-		return false
+// evict_far_images destroys cached GPU textures for images outside the
+// current +/- 2 window, so browsing many files does not grow VRAM.
+fn (mut app App) evict_far_images(current int) {
+	mut stale := []int{}
+	for idx, cache_idx in app.img_cache {
+		if idx < current - 2 || idx > current + 2 {
+			app.gg.remove_cached_image_by_idx(cache_idx)
+			stale << idx
+		}
 	}
-	return true
+	for idx in stale {
+		app.img_cache.delete(idx)
+	}
 }
 
 fn (mut app App) load_img_at(index int) bool {
 	if index < 0 || index >= app.img_paths.len {
 		return false
 	}
-	if app.load_img(app.img_paths[index]) {
-		app.img_index = index
-		return true
+	mut loaded := false
+	if cache_idx := app.img_cache[index] {
+		cached := app.gg.get_cached_image_by_idx(cache_idx)
+		if cached.ok {
+			app.img = *cached
+			loaded = true
+		}
 	}
-	return false
+	if !loaded {
+		new_img := app.gg.create_image(app.img_paths[index]) or {
+			eprintln('Skipping unreadable image ${app.img_paths[index]}: ${err}')
+			return false
+		}
+		app.img_cache[index] = app.gg.cache_image(new_img)
+		app.img = new_img
+	}
+	app.img_index = index
+	app.evict_far_images(index)
+	return true
 }
 
 fn (mut app App) select_first_loadable_image(start int) bool {
@@ -280,7 +355,7 @@ fn on_event(e &gg.Event, mut app App) {
 				}
 				.s {
 					app.slide_mode = !app.slide_mode
-					app.last_slide_time = time.now().unix()
+					app.last_slide_time = time.now().unix_milli()
 				}
 				.left_bracket {
 					if app.slide_interval > 1 {
@@ -375,8 +450,8 @@ fn frame(mut app App) {
 	}
 
 	if app.slide_mode && app.img_paths.len > 1 {
-		now := time.now().unix()
-		if now - app.last_slide_time >= app.slide_interval {
+		now := time.now().unix_milli()
+		if now - app.last_slide_time >= i64(app.slide_interval) * 1000 {
 			app.load_relative_image(1)
 			app.last_slide_time = now
 		}
