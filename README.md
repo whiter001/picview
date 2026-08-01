@@ -17,6 +17,9 @@ v run . -h
 # Or run in the current directory
 v run .
 
+# Include subdirectories
+v run . -r images
+
 # Optional fallback for compatibility
 env PIC_DIR="images" v run .
 ```
@@ -55,7 +58,9 @@ env PIC_DIR="images" v run .
 
 ## Notes
 
-- Images are sorted by filename (e.g., 001.jpg, 002.jpg)
+- Images are sorted naturally by filename (e.g., img2.jpg before img10.jpg)
+- Neighboring images are decoded in a background thread; recently viewed images are kept in a small GPU texture cache
+- The image cannot be dragged fully out of the window; press `R` or `0` to refit anyway
 - Shows: filename, resolution, index, zoom scale, fullscreen & slideshow status
 - The first command-line argument points to the image directory; the bundled samples live in `images/`
 - Mouse wheel also zooms the image, matching the `+` / `-` shortcuts

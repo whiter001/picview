@@ -60,11 +60,27 @@ jobs:
           echo "$(dirname "$v_bin")" >> "$GITHUB_PATH"
           "$v_bin" version
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev
+
       - name: Verify formatting
         shell: bash
         run: |
           v fmt --check picview.v
+          v fmt --check picview_test.v
           v fmt --check main.v
+
+      - name: Vet
+        shell: bash
+        run: |
+          v vet .
+
+      - name: Test
+        shell: bash
+        run: |
+          v test .
 
   build:
     name: Build ${{ matrix.target }}

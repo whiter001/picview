@@ -2,11 +2,19 @@ module picview
 
 import gg
 import os
+import stbi
 import time
 
 enum ViewMode {
 	fit    // 自动适配窗口
 	manual // 手动缩放/拖拽
+}
+
+// PreloadResult carries a CPU-decoded image from the preload worker to
+// the main thread, where it is uploaded to the GPU.
+struct PreloadResult {
+	index int
+	img   stbi.Image
 }
 
 struct App {
@@ -30,6 +38,8 @@ mut:
 	show_help        bool
 	need_initial_fit bool
 	img_cache        map[int]int // img_paths index -> gg image cache index
+	preload_req      chan int
+	preload_res      chan PreloadResult
 }
 
 fn (mut app App) fit_to_window() {
@@ -93,18 +103,64 @@ fn (mut app App) pan_image(dx f32, dy f32) {
 	app.view_mode = .manual
 	app.img_x += dx
 	app.img_y += dy
+	app.clamp_pan()
+}
+
+// clamp_pan keeps at least a small strip of the image inside the window,
+// so it cannot be dragged out of reach.
+fn (mut app App) clamp_pan() {
+	if app.img.width <= 0 || app.img.height <= 0 {
+		return
+	}
+	win := app.gg.window_size()
+	margin := f32(60)
+	w := f32(app.img.width) * app.scale
+	h := f32(app.img.height) * app.scale
+	max_x := f32(win.width) - margin
+	min_x := margin - w
+	max_y := f32(win.height) - margin
+	min_y := margin - h
+	if app.img_x > max_x {
+		app.img_x = max_x
+	}
+	if app.img_x < min_x {
+		app.img_x = min_x
+	}
+	if app.img_y > max_y {
+		app.img_y = max_y
+	}
+	if app.img_y < min_y {
+		app.img_y = min_y
+	}
 }
 
 fn usage() {
 	println('picview [OPTIONS] [DIR|FILE]')
 	println('  DIR|FILE  directory containing images, or a single image file')
 	println('            (default: current directory)')
+	println('  -r, --recursive   also search subdirectories')
 	println('  -h, --help        print this help and exit')
 }
 
 fn is_image_file(path string) bool {
 	ext := os.file_ext(path).to_lower()
 	return ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'].any(ext == it)
+}
+
+// collect_images lists image files in dir, optionally descending into
+// subdirectories. Unreadable subdirectories are skipped silently.
+fn collect_images(dir string, recursive bool) []string {
+	mut out := []string{}
+	entries := os.ls(dir) or { return out }
+	for entry in entries {
+		full := os.join_path(dir, entry)
+		if recursive && os.is_dir(full) {
+			out << collect_images(full, recursive)
+		} else if is_image_file(entry) {
+			out << full
+		}
+	}
+	return out
 }
 
 // natural_compare orders strings so that embedded numbers compare
@@ -162,8 +218,11 @@ fn natural_compare(a &string, b &string) int {
 
 pub fn run() {
 	mut app := &App{}
+	app.preload_req = chan int{cap: 4}
+	app.preload_res = chan PreloadResult{cap: 4}
 	args := os.args
 	mut base_dir := ''
+	mut recursive := false
 	for i, a in args {
 		if i == 0 {
 			continue
@@ -172,6 +231,9 @@ pub fn run() {
 			'-h', '--help' {
 				usage()
 				return
+			}
+			'-r', '--recursive' {
+				recursive = true
 			}
 			else {
 				if base_dir == '' {
@@ -202,11 +264,11 @@ pub fn run() {
 		}
 	}
 
-	fs := os.ls(base_dir) or {
+	_ := os.ls(base_dir) or {
 		eprintln('error: cannot list directory ${base_dir}: ${err}')
 		exit(1)
 	}
-	mut files := fs.filter(is_image_file).map(os.join_path(base_dir, it))
+	mut files := collect_images(base_dir, recursive)
 	files.sort_with_compare(natural_compare)
 
 	if files.len == 0 {
@@ -242,6 +304,8 @@ pub fn run() {
 		eprintln('error: no loadable images found in ${base_dir}')
 		exit(1)
 	}
+	spawn app.preload_worker()
+	app.request_preload()
 	app.view_mode = .fit
 	app.need_initial_fit = true
 	app.gg.run()
@@ -262,10 +326,80 @@ fn (mut app App) evict_far_images(current int) {
 	}
 }
 
+// preload_worker decodes neighboring images off the main thread, so
+// navigating to them does not stall on JPEG/PNG decoding.
+fn (mut app App) preload_worker() {
+	mut recently := []int{cap: 9}
+	for {
+		index := <-app.preload_req
+		if index < 0 || index >= app.img_paths.len || index in recently {
+			continue
+		}
+		stb_img := stbi.load(app.img_paths[index]) or { continue }
+		app.preload_res <- PreloadResult{
+			index: index
+			img:   stb_img
+		}
+		recently << index
+		if recently.len > 8 {
+			recently.delete(0)
+		}
+	}
+}
+
+// request_preload queues the images before and after the current one for
+// background decoding. Stale requests from earlier navigations are dropped.
+fn (mut app App) request_preload() {
+	if app.img_paths.len < 2 {
+		return
+	}
+	mut stale := 0
+	for app.preload_req.try_pop(mut stale) == .success {
+	}
+	next := (app.img_index + 1) % app.img_paths.len
+	prev := (app.img_index - 1 + app.img_paths.len) % app.img_paths.len
+	// FIFO: queue the next image first, it is the most likely target
+	if next !in app.img_cache {
+		app.preload_req.try_push(next)
+	}
+	if prev !in app.img_cache {
+		app.preload_req.try_push(prev)
+	}
+}
+
+// upload_preloaded moves decoded images from the worker into the GPU
+// texture cache. Results that are already cached or have fallen outside
+// the cache window are discarded.
+fn (mut app App) upload_preloaded() {
+	for {
+		mut res := PreloadResult{}
+		if app.preload_res.try_pop(mut res) != .success {
+			break
+		}
+		if res.index in app.img_cache || res.index < app.img_index - 2
+			|| res.index > app.img_index + 2 {
+			res.img.free()
+			continue
+		}
+		mut gimg := gg.Image{
+			width:       res.img.width
+			height:      res.img.height
+			nr_channels: res.img.nr_channels
+			ok:          res.img.ok
+			data:        res.img.data
+			ext:         res.img.ext
+			path:        app.img_paths[res.index]
+		}
+		gimg.init_sokol_image()
+		app.img_cache[res.index] = app.gg.cache_image(gimg)
+	}
+}
+
 fn (mut app App) load_img_at(index int) bool {
 	if index < 0 || index >= app.img_paths.len {
 		return false
 	}
+	app.upload_preloaded()
 	mut loaded := false
 	if cache_idx := app.img_cache[index] {
 		cached := app.gg.get_cached_image_by_idx(cache_idx)
@@ -284,6 +418,7 @@ fn (mut app App) load_img_at(index int) bool {
 	}
 	app.img_index = index
 	app.evict_far_images(index)
+	app.request_preload()
 	return true
 }
 
@@ -441,6 +576,8 @@ fn on_scroll(event &gg.Event, mut app App) {
 }
 
 fn frame(mut app App) {
+	app.upload_preloaded()
+
 	if app.need_initial_fit {
 		win := app.gg.window_size()
 		if win.width > 0 && win.height > 0 {
